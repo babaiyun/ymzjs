@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>ymzViewLib v1.1.0 Test</title>
+    <style>
+        body{font-family:Arial,sans-serif;padding:20px;line-height:1.6}
+        .pass{color:#16833b}.fail{color:#c62828}.summary{font-size:18px;font-weight:bold;margin-bottom:16px}
+        pre{background:#f5f5f5;padding:12px;white-space:pre-wrap}
+    </style>
+</head>
+<body>
+    <h1>ymzViewLib v1.1.0 Test</h1>
+    <div id="summary" class="summary">Running...</div>
+    <div id="results"></div>
+
+    <script type="text/template" id="dom_tpl">DOM:<%= d.name %></script>
+
+    <script src="./ymzBase.js"></script>
+    <script src="./ymzViewLib.js"></script>
+    <script>
+    (function(){
+        'use strict';
+
+        var resultElem =document.getElementById('results'),
+            summaryElem =document.getElementById('summary'),
+            passCount =0,
+            failCount =0,
+            totalCount =0;
+
+        function log(name, ok, detail){
+            totalCount++;
+            if(ok) passCount++;
+            else failCount++;
+
+            var row =document.createElement('div');
+            row.className =ok ? 'pass' : 'fail';
+            row.textContent =(ok ? 'PASS ' : 'FAIL ') + name + (detail ? ' - ' + detail : '');
+            resultElem.appendChild(row);
+        }
+
+        function test(name, func){
+            try{
+                func();
+                log(name, true);
+            }catch(error){
+                log(name, false, error && error.message ? error.message : String(error));
+            }
+        }
+
+        function equal(actual, expected, message){
+            if(actual !== expected){
+                throw new Error((message ? message + ': ' : '') + 'expected [' + expected + '] but got [' + actual + ']');
+            }
+        }
+
+        function ok(value, message){
+            if(!value) throw new Error(message || 'expected truthy value');
+        }
+
+        function throws(func, check, message){
+            var error =null;
+            try{
+                func();
+            }catch(e){
+                error =e;
+            }
+
+            if(!error) throw new Error(message || 'expected error');
+            if(check && !check(error)) throw new Error('unexpected error: ' + error.message);
+            return error;
+        }
+
+        var view =ymzViewLib.create();
+
+        test('escaped output', function(){
+            equal(
+                view.render(null, {value:'<b>&"\'</b>'}, null, '<%= d.value %>'),
+                '&lt;b&gt;&amp;&quot;&#39;&lt;/b&gt;'
+            );
+        });
+
+        test('raw output', function(){
+            equal(
+                view.render(null, {value:'<b>ok</b>'}, null, '<%- d.value %>'),
+                '<b>ok</b>'
+            );
+        });
+
+        test('null output becomes empty string', function(){
+            equal(view.render(null, {value:null}, null, 'A<%= d.value %>B'), 'AB');
+        });
+
+        test('template comment ignored', function(){
+            equal(view.render(null, {}, null, 'A<%# hidden %>B'), 'AB');
+        });
+
+        test('logic code blocks', function(){
+            equal(
+                view.render(null, {items:[1,2,3]}, null, '<% for(var i=0;i<d.items.length;i++){ %><%= d.items[i] %><% } %>'),
+                '123'
+            );
+        });
+
+        ymzViewLib.helperFunc('upper', function(value){
+            return String(value).toUpperCase();
+        });
+
+        test('helper function', function(){
+            equal(view.render(null, {name:'kent'}, null, '<%= h.upper(d.name) %>'), 'KENT');
+        });
+
+        view.tplMany({
+            item:'<li><%= d.name %></li>',
+            list:'<ul><% for(var i=0;i<d.items.length;i++){ %><%+ item, d.items[i] %><% } %></ul>',
+            inherit:'<span><%= d.name %></span>',
+            parent:'<div><%+ inherit %></div>'
+        });
+
+        test('subtemplate with specified data', function(){
+            equal(
+                view.render('list', {items:[{name:'A'},{name:'B'}]}),
+                '<ul><li>A</li><li>B</li></ul>'
+            );
+        });
+
+        test('subtemplate inherits current data', function(){
+            equal(view.render('parent', {name:'Ken'}), '<div><span>Ken</span></div>');
+        });
+
+        test('dynamic subtemplate name rejected', function(){
+            throws(function(){
+                view.render(null, {}, null, '<%+ [d.tpl] %>');
+            }, function(error){
+                return error instanceof SyntaxError && /invalid subtemplate name/.test(error.message);
+            });
+        });
+
+        test('DOM template lookup', function(){
+            equal(view.render('dom_tpl', {name:'View'}), 'DOM:View');
+        });
+
+        test('render callback', function(){
+            var ret =view.render(null, {name:'A'}, function(html){
+                return '[' + html + ']';
+            }, '<%= d.name %>');
+            equal(ret, '[A]');
+        });
+
+        test('cache created and invalidated by tpl()', function(){
+            view.tpl('cache_tpl', 'A<%= d.v %>');
+            equal(view.render('cache_tpl', {v:1}), 'A1');
+            ok(view.hasCache('cache_tpl'), 'cache should exist');
+            view.tpl('cache_tpl', 'B<%= d.v %>');
+            ok(!view.hasCache('cache_tpl'), 'cache should be cleared after tpl update');
+            equal(view.render('cache_tpl', {v:2}), 'B2');
+        });
+
+        test('clearCache all', function(){
+            view.render('item', {name:'X'});
+            view.render('parent', {name:'Y'});
+            ok(view.hasCache('item'));
+            ok(view.hasCache('parent'));
+            view.clearCache();
+            ok(!view.hasCache('item'));
+            ok(!view.hasCache('parent'));
+        });
+
+        test('tplMany validation is atomic', function(){
+            var v =ymzViewLib.create();
+            throws(function(){
+                v.tplMany({good:'OK',bad:123});
+            });
+            ok(!v.hasTpl('good'), 'good template must not be partially registered');
+        });
+
+        test('helperList validation is atomic', function(){
+            throws(function(){
+                ymzViewLib.helperList({atomicGood:function(){ return 1; },atomicBad:123});
+            });
+            ok(!ymzViewLib.hasHelper('atomicGood'), 'helper must not be partially registered');
+        });
+
+        test('custom delimiters', function(){
+            var v =ymzViewLib.create({start:'{{',end:'}}'});
+            equal(v.render(null, {name:'Custom'}, null, '{{= d.name }}'), 'Custom');
+        });
+
+        test('invalid options rejected', function(){
+            throws(function(){
+                ymzViewLib.create([]);
+            }, function(error){
+                return error instanceof TypeError;
+            });
+        });
+
+        test('whitespace template name rejected', function(){
+            throws(function(){
+                view.tpl('   ', 'x');
+            }, function(error){
+                return error instanceof TypeError;
+            });
+        });
+
+        test('each array and stop', function(){
+            var values =[];
+            ymzViewLib.each([10,20,30], function(index, value){
+                values.push(index + ':' + value);
+                if(index === 1) return false;
+            });
+            equal(values.join(','), '0:10,1:20');
+        });
+
+        test('each object', function(){
+            var values =[];
+            ymzViewLib.each({a:1,b:2}, function(name, value){
+                values.push(name + ':' + value);
+            });
+            values.sort();
+            equal(values.join(','), 'a:1,b:2');
+        });
+
+        test('debug render error contains template line', function(){
+            var v =ymzViewLib.create({debug:1});
+            var error =throws(function(){
+                v.render(null, {}, null, 'line1\n<%= d.user.name %>');
+            });
+            equal(error.templateLine, 2);
+            ok(/line 2/.test(error.message));
+        });
+
+        test('debug compile error keeps generated source', function(){
+            var v =ymzViewLib.create({debug:1});
+            var error =throws(function(){
+                v.render(null, {}, null, '<% if( %>');
+            });
+            ok(error instanceof SyntaxError);
+            ok(typeof error.generatedSource === 'string' && error.generatedSource !== '');
+        });
+
+        test('missing subtemplate includes chain', function(){
+            var v =ymzViewLib.create();
+            v.tpl('root_missing', '<%+ not_exists %>');
+            var error =throws(function(){
+                v.render('root_missing', {});
+            });
+            ok(/root_missing -> not_exists/.test(error.message), error.message);
+        });
+
+        test('maxDepth protects recursive subtemplate', function(){
+            var v =ymzViewLib.create({maxDepth:3});
+            v.tpl('loop', '<%+ loop %>');
+            var error =throws(function(){
+                v.render('loop', {});
+            });
+            ok(/max subtemplate depth exceeded/.test(error.message));
+            ok(error.templateChain && error.templateChain.length > 3);
+        });
+
+        summaryElem.textContent ='PASS ' + passCount + ' / ' + totalCount + (failCount ? '   FAIL ' + failCount : '');
+        summaryElem.className ='summary ' + (failCount ? 'fail' : 'pass');
+        document.body.setAttribute('data-test-total', String(totalCount));
+        document.body.setAttribute('data-test-pass', String(passCount));
+        document.body.setAttribute('data-test-fail', String(failCount));
+    }());
+    </script>
+</body>
+</html>

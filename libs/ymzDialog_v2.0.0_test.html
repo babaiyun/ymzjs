@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ymzDialog v2.0.0 Callback Test</title>
+    <style>
+        body{font-family:Arial,sans-serif;padding:24px;line-height:1.6}
+        button{margin:4px;padding:8px 14px}
+        #log{margin-top:20px;padding:14px;background:#f6f6f6;white-space:pre-wrap}
+    </style>
+</head>
+<body>
+
+<h1>ymzDialog v2.0.0 Callback Demo</h1>
+
+<button id="open-html">HTML Dialog</button>
+<button id="open-alert">Alert</button>
+<button id="open-confirm">Confirm</button>
+<button id="open-prompt">Prompt</button>
+<button id="run-test">Run Tests</button>
+
+<div id="log">等待操作...</div>
+
+<script src="./ymzBase.js"></script>
+<script src="./ymzDialog.js"></script>
+
+<script>
+(function(){
+    'use strict';
+
+    var logElem =document.getElementById('log');
+
+    function log(text){
+        logElem.textContent =String(text);
+    }
+
+    document.getElementById('open-html').onclick =function(){
+        var controller =ymzDialog.open({
+            title:'HTML',
+            content:'<strong id="html-test">HTML</strong><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><br><div style="height:500px;">222222222222222</div>',
+            noBtn:'取消',
+            yesBtn:'确定',
+
+            yesFunc:function(curController){
+                log('点击确定: ' + curController.id);
+            },
+
+            noFunc:function(curController){
+                log('点击取消: ' + curController.id);
+            },
+
+            onClose:function(reason){
+                console.log('关闭原因:', reason);
+            }
+        });
+
+        console.log(controller);
+    };
+
+    document.getElementById('open-alert').onclick =function(){
+        ymzDialog.alert('操作完成', {
+            yesFunc:function(){
+                log('Alert 确定');
+            }
+        });
+    };
+
+    document.getElementById('open-confirm').onclick =function(){
+        ymzDialog.confirm('确认删除？', {
+            yesFunc:function(){
+                log('Confirm: YES');
+            },
+
+            noFunc:function(){
+                log('Confirm: NO');
+            }
+        });
+    };
+
+    document.getElementById('open-prompt').onclick =function(){
+        ymzDialog.prompt('请输入名称', {
+            value:'Ken',
+
+            validate:function(value){
+                return value.trim() === ''
+                    ? '名称不能为空'
+                    : true;
+            },
+
+            yesFunc:function(value){
+                log('Prompt: ' + value);
+            },
+
+            noFunc:function(){
+                log('Prompt cancelled');
+            }
+        });
+    };
+
+    document.getElementById('run-test').onclick =function(){
+        var pass =0,
+            fail =0,
+            list =[];
+
+        function check(name, stat){
+            if(stat){
+                pass++;
+                list.push('PASS  ' + name);
+            }else{
+                fail++;
+                list.push('FAIL  ' + name);
+            }
+        }
+
+        var yesCount =0,
+            noCount =0,
+            closeReason ='',
+            controller =ymzDialog.open({
+                title:'Test',
+                contentText:'安全文本',
+                noBtn:'取消',
+                yesBtn:'确定',
+
+                yesFunc:function(){
+                    yesCount++;
+                },
+
+                noFunc:function(){
+                    noCount++;
+                },
+
+                onClose:function(reason){
+                    closeReason =reason;
+                }
+            });
+
+        check('open returns controller', !!controller);
+        check('no promise field', controller.promise === undefined);
+        check('isOpen true', ymzDialog.isOpen() === true);
+        check('current is elem', ymzDialog.current() === controller.elem);
+
+        controller.yes();
+
+        check('yesFunc called', yesCount === 1);
+        check('yes closes dialog', ymzDialog.isOpen() === false);
+        check('yes close reason', closeReason === 'yes');
+
+        controller =ymzDialog.open({
+            title:'Keep Open',
+            yesFunc:function(){
+                return false;
+            }
+        });
+
+        controller.yes();
+
+        check('yesFunc false keeps open', ymzDialog.isOpen() === true);
+
+        controller.close();
+
+        check('controller.close closes', ymzDialog.isOpen() === false);
+
+        var first =ymzDialog.open({
+            title:'First'
+        });
+
+        var second =ymzDialog.open({
+            title:'Second'
+        });
+
+        check('old controller cannot close new dialog', first.close() === false);
+        check('new dialog remains current', ymzDialog.current() === second.elem);
+
+        second.close();
+
+        controller =ymzDialog.open({
+            title:'No',
+            noBtn:'取消',
+            noFunc:function(){
+                noCount++;
+            }
+        });
+
+        controller.no();
+
+        check('noFunc called', noCount === 1);
+        check('no closes dialog', ymzDialog.isOpen() === false);
+
+        controller =ymzDialog.open({
+            title:'HTML',
+            content:'<b id="test-html">OK</b>'
+        });
+
+        check(
+            'HTML content rendered',
+            !!controller.body.querySelector('#test-html')
+        );
+
+        controller.close();
+
+        controller =ymzDialog.open({
+            title:'Text',
+            contentText:'<b>TEXT</b>'
+        });
+
+        check(
+            'contentText escaped',
+            controller.body.querySelector('b') === null
+        );
+
+        controller.close();
+
+        log(
+            list.join('\n') +
+            '\n\nRESULT: ' +
+            pass +
+            ' passed, ' +
+            fail +
+            ' failed'
+        );
+    };
+}());
+</script>
+
+</body>
+</html>

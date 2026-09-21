@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ymzFingerprint 智能自愈指纹库 - 测试 Demo</title>
+  <style>
+    :root {
+      --bg-color: #f4f6f8;
+      --card-bg: #ffffff;
+      --primary: #0066ff;
+      --success: #00b853;
+      --warning: #ff9500;
+      --text: #1d1d1f;
+      --code-bg: #1e1e1e;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text);
+      padding: 24px;
+      margin: 0;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+      margin-bottom: 20px;
+    }
+
+    h2 {
+      margin-top: 0;
+      font-size: 18px;
+      border-bottom: 1px solid #eee;
+      padding-bottom: 10px;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px dashed #eee;
+    }
+
+    .info-row:last-child {
+      border-bottom: none;
+    }
+
+    .label {
+      font-weight: 600;
+      color: #666;
+    }
+
+    .value {
+      font-family: Consolas, Monaco, monospace;
+      font-weight: bold;
+      background: #eef4ff;
+      color: var(--primary);
+      padding: 4px 8px;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .status-normal { background: #e6f9ed; color: var(--success); }
+    .status-updated { background: #fff4e5; color: var(--warning); }
+
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 15px;
+    }
+
+    button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: opacity 0.2s;
+    }
+
+    button:hover { opacity: 0.9; }
+    button.danger { background: #ff3b30; }
+    button.warning { background: var(--warning); }
+
+    pre {
+      background: var(--code-bg);
+      color: #00ff66;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 13px;
+      max-height: 300px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="card">
+      <h2>设备识别结果 (Smart ID)</h2>
+      
+      <div class="info-row">
+        <span class="label">持久化 Visitor ID (主键)</span>
+        <span id="visitor-id" class="value">计算中...</span>
+      </div>
+
+      <div class="info-row">
+        <span class="label">强稳定硬件 Hash (基线)</span>
+        <span id="stable-hash" class="value">计算中...</span>
+      </div>
+
+      <div class="info-row">
+        <span class="label">当前屏幕分辨率 (易变)</span>
+        <span id="screen-res" class="value">读取中...</span>
+      </div>
+
+      <div class="info-row">
+        <span class="label">快照状态 (Auto-Healing)</span>
+        <span id="snapshot-status" class="status-badge status-normal">未触发修复</span>
+      </div>
+
+      <div class="btn-group">
+        <button onclick="refreshData()">重新读取识别结果</button>
+        <button class="warning" onclick="simulateDisplayChange()">模拟外接显示器/改分辨率</button>
+        <button class="danger" onclick="clearPersistentStorage()">清理 LocalStorage & Cookie</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>实时特征快照明细 (JSON)</h2>
+      <pre id="json-output">// 特征解析中...</pre>
+    </div>
+  </div>
+
+  <script>
+    /**
+     * SmartFingerprint 核心实现
+     */
+    class SmartFingerprint {
+      constructor(options = {}) {
+        this.storageKey = options.storageKey || '__ymz_vid__';
+        this.snapshotKey = options.snapshotKey || '__ymz_snapshot__';
+      }
+
+      getComponents() {
+        const webgl = this.getWebGLInfo();
+        return {
+          // 1. 强稳定硬件与平台特征 (屏不影响)
+          stable: {
+            webglVendor: webgl.vendor,
+            webglRenderer: webgl.renderer,
+            hardwareConcurrency: navigator.hardwareConcurrency || '',
+            deviceMemory: navigator.deviceMemory || '',
+            platform: navigator.platform || '',
+            canvas: this.getCanvasFingerprint()
+          },
+          // 2. 易变显示与环境特征 (允许动态修复)
+          volatile: {
+            screenResolution: `${screen.width}x${screen.height}x${window.devicePixelRatio || 1}`,
+            colorDepth: screen.colorDepth,
+            timezoneOffset: new Date().getTimezoneOffset(),
+            timezoneName: Intl.DateTimeFormat().resolvedOptions().timeZone
+          }
+        };
+      }
+
+      getStableHash(components) {
+        const stableString = Object.keys(components.stable)
+          .sort()
+          .map(k => `${k}:${components.stable[k]}`)
+          .join('###');
+        return this.murmurhash3(stableString);
+      }
+
+      getVisitorDetail(simulatedScreen = null) {
+        const currentComponents = this.getComponents();
+        
+        // 允许模拟显示器参数变更
+        if (simulatedScreen) {
+          currentComponents.volatile.screenResolution = simulatedScreen;
+        }
+
+        const currentStableHash = this.getStableHash(currentComponents);
+        let visitorId = this.getStoredId();
+        let oldSnapshot = this.getStoredSnapshot();
+
+        // 判定显示器/视口特征是否发生变动
+        let isDisplayChanged = false;
+        if (oldSnapshot && oldSnapshot.volatile) {
+          if (oldSnapshot.volatile.screenResolution !== currentComponents.volatile.screenResolution) {
+            isDisplayChanged = true;
+          }
+        }
+
+        // 场景 A: 存在持久化 ID -> 维持 ID 不变，静默更新快照
+        if (visitorId) {
+          this.saveSnapshot(currentComponents);
+          return {
+            visitorId,
+            stableHash: currentStableHash,
+            isAutoUpdated: isDisplayChanged,
+            components: currentComponents
+          };
+        }
+
+        // 场景 B: 存储丢失 -> 依靠强稳定硬件 Hash 恢复生成并绑定 ID
+        visitorId = `vid_${currentStableHash}`;
+        this.saveStoredId(visitorId);
+        this.saveSnapshot(currentComponents);
+
+        return {
+          visitorId,
+          stableHash: currentStableHash,
+          isAutoUpdated: false,
+          components: currentComponents
+        };
+      }
+
+      getStoredId() {
+        try {
+          return localStorage.getItem(this.storageKey) || this.getCookie(this.storageKey);
+        } catch { return null; }
+      }
+
+      saveStoredId(id) {
+        try {
+          localStorage.setItem(this.storageKey, id);
+          document.cookie = `${this.storageKey}=${id};path=/;max-age=31536000`;
+        } catch {}
+      }
+
+      getStoredSnapshot() {
+        try {
+          const data = localStorage.getItem(this.snapshotKey);
+          return data ? JSON.parse(data) : null;
+        } catch { return null; }
+      }
+
+      saveSnapshot(components) {
+        try {
+          localStorage.setItem(this.snapshotKey, JSON.stringify(components));
+        } catch {}
+      }
+
+      getCookie(name) {
+        const m = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+        return m ? decodeURIComponent(m[2]) : null;
+      }
+
+      getWebGLInfo() {
+        try {
+          const canvas = document.createElement('canvas');
+          const gl = canvas.getContext('webgl');
+          const debug = gl.getExtension('WEBGL_debug_renderer_info');
+          return {
+            vendor: gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) || '',
+            renderer: gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) || ''
+          };
+        } catch { return { vendor: '', renderer: '' }; }
+      }
+
+      getCanvasFingerprint() {
+        try {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          ctx.fillText('ymz_fp', 2, 2);
+          return canvas.toDataURL();
+        } catch { return ''; }
+      }
+
+      murmurhash3(key) {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < key.length; i++) {
+          h ^= key.charCodeAt(i);
+          h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+        }
+        return (h >>> 0).toString(16);
+      }
+    }
+
+    // --- Demo 交互控制逻辑 ---
+    const fp = new SmartFingerprint();
+
+    function updateUI(detail) {
+      document.getElementById('visitor-id').textContent = detail.visitorId;
+      document.getElementById('stable-hash').textContent = detail.stableHash;
+      document.getElementById('screen-res').textContent = detail.components.volatile.screenResolution;
+      
+      const badge = document.getElementById('snapshot-status');
+      if (detail.isAutoUpdated) {
+        badge.textContent = '已自动修复更新快照 (Visitor ID 锁定不变)';
+        badge.className = 'status-badge status-updated';
+      } else {
+        badge.textContent = '正常 (状态稳定)';
+        badge.className = 'status-badge status-normal';
+      }
+
+      document.getElementById('json-output').textContent = JSON.stringify(detail.components, null, 2);
+    }
+
+    function refreshData() {
+      const detail = fp.getVisitorDetail();
+      updateUI(detail);
+    }
+
+    // 模拟接插 4K 显示器 / 分辨率修改
+    function simulateDisplayChange() {
+      const fakeRes = `${Math.floor(Math.random() * 1000 + 2000)}x1440x2`;
+      const detail = fp.getVisitorDetail(fakeRes);
+      updateUI(detail);
+      alert(`已模拟显示器分辨率变更为: ${fakeRes}\n注意：Visitor ID 保持锁定不变！`);
+    }
+
+    // 清理缓存
+    function clearPersistentStorage() {
+      localStorage.clear();
+      document.cookie = "__ymz_vid__=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+      document.cookie = "__ymz_snapshot__=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+      alert('已清空 LocalStorage 和 Cookie！下一次读取将触发硬件 Hash 降级恢复。');
+      refreshData();
+    }
+
+    // 页面加载完成自动运行
+    refreshData();
+  </script>
+</body>
+</html>

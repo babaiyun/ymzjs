@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ymzAjax v1.14.0 Test Demo</title>
+<style>
+body{font-family:Arial,"Microsoft YaHei",sans-serif;margin:24px;background:#f6f7f9;color:#222}
+h1{margin:0 0 8px}.tip{color:#666;margin-bottom:18px}
+.summary{padding:12px 16px;background:#fff;border:1px solid #ddd;margin-bottom:16px}
+.pass{color:#16803b}.fail{color:#c62828}.test{padding:9px 12px;background:#fff;border-bottom:1px solid #eee}
+code{background:#eee;padding:2px 5px}
+</style>
+</head>
+<body>
+<h1>ymzAjax v1.14.0 Test Demo</h1>
+<div class="tip">无需真实服务器。Demo 使用 Mock XMLHttpRequest，稳定测试 GET/POST/JSON/Header/错误分类/超时/abort 等核心行为。</div>
+<div id="summary" class="summary">Running...</div>
+<div id="results"></div>
+
+<script src="./ymzBase.js"></script>
+<script>
+(function(global){
+'use strict';
+
+function MockXHR(){
+	this.readyState =0;
+	this.status =0;
+	this.statusText ='';
+	this.responseText ='';
+	this.response =null;
+	this.responseType ='';
+	this.timeout =0;
+	this.withCredentials =false;
+	this.requestHeaders =Object.create(null);
+	this.body =undefined;
+	this.onload =null;
+	this.onerror =null;
+	this.ontimeout =null;
+	this.onabort =null;
+	MockXHR.instances.push(this);
+}
+
+MockXHR.instances =[];
+MockXHR.throwOpen =false;
+MockXHR.throwSend =false;
+
+MockXHR.prototype.open =function(method, url, async){
+	if(MockXHR.throwOpen){
+		MockXHR.throwOpen =false;
+		throw new Error('mock open failed');
+	}
+
+	this.method =method;
+	this.url =url;
+	this.async =async;
+	this.readyState =1;
+};
+
+MockXHR.prototype.setRequestHeader =function(name, value){
+	this.requestHeaders[name] =String(value);
+};
+
+MockXHR.prototype.send =function(body){
+	if(MockXHR.throwSend){
+		MockXHR.throwSend =false;
+		throw new Error('mock send failed');
+	}
+
+	this.body =body;
+	this.readyState =2;
+};
+
+MockXHR.prototype.abort =function(){
+	if(this.readyState === 0 || this.readyState === 4) return;
+
+	this.readyState =0;
+	if(typeof this.onabort === 'function') this.onabort();
+};
+
+MockXHR.prototype.respond =function(status, text, statusText, response){
+	this.status =status;
+	this.statusText =statusText || '';
+	this.responseText =text == null ? '' : String(text);
+	this.response =response === undefined ? this.responseText : response;
+	this.readyState =4;
+
+	var func =this.onload;
+	if(typeof func === 'function') func();
+};
+
+MockXHR.prototype.networkError =function(){
+	var func =this.onerror;
+	if(typeof func === 'function') func();
+};
+
+MockXHR.prototype.timeoutError =function(){
+	var func =this.ontimeout;
+	if(typeof func === 'function') func();
+};
+
+MockXHR.latest =function(){
+	return MockXHR.instances[MockXHR.instances.length - 1];
+};
+
+global.XMLHttpRequest =MockXHR;
+global.__ymzAjaxMockXHR =MockXHR;
+
+}(window));
+</script>
+<script src="./ymzAjax.js"></script>
+<script>
+(function(){
+'use strict';
+
+var ajax =window.ymzAjax,
+MockXHR =window.__ymzAjaxMockXHR,
+results =document.getElementById('results'),
+summary =document.getElementById('summary'),
+passed =0,
+failed =0;
+
+function escapeHtml(str){
+	return String(str).replace(/[&<>\"]/g, function(ch){
+		return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[ch];
+	});
+}
+
+function render(){
+	summary.innerHTML =
+		'<strong>Total:</strong> ' + (passed + failed) +
+		' &nbsp; <span class="pass">Pass: ' + passed + '</span>' +
+		' &nbsp; <span class="fail">Fail: ' + failed + '</span>';
+}
+
+function add(name, ok, error){
+	var row =document.createElement('div');
+	row.className ='test';
+	row.innerHTML =
+		'<strong class="' + (ok ? 'pass' : 'fail') + '">' +
+		(ok ? 'PASS' : 'FAIL') +
+		'</strong> &nbsp; ' + escapeHtml(name) +
+		(error ? '<br><code>' + escapeHtml(error.message || error) + '</code>' : '');
+	results.appendChild(row);
+}
+
+function assert(stat, message){
+	if(!stat) throw new Error(message || 'Assertion failed');
+}
+
+function header(xhr, name){
+	name =name.toLowerCase();
+
+	for(var key in xhr.requestHeaders){
+		if(Object.prototype.hasOwnProperty.call(xhr.requestHeaders, key) && key.toLowerCase() === name){
+			return xhr.requestHeaders[key];
+		}
+	}
+
+	return undefined;
+}
+
+function expectReject(job, type){
+	return job.then(function(){
+		throw new Error('expected rejection');
+	}, function(error){
+		if(type) assert(error.type === type, 'expected type ' + type + ', got ' + error.type);
+		return error;
+	});
+}
+
+function test(name, func){
+	return Promise.resolve().then(func).then(function(){
+		passed++;
+		add(name, true);
+		render();
+	}, function(error){
+		failed++;
+		add(name, false, error);
+		render();
+	});
+}
+
+var tests =[];
+function addTest(name, fn){ tests.push([name, fn]); }
+
+addTest('serialize nested data', function(){
+	var text =ajax.serialize({tags:[1,2],user:{name:'Ken'},empty:null});
+	assert(text === 'tags%5B%5D=1&tags%5B%5D=2&user%5Bname%5D=Ken&empty=');
+});
+
+addTest('serialize circular reference throws', function(){
+	var data ={a:1};
+	data.self =data;
+	var error =null;
+	try{ ajax.serialize(data); }catch(e){ error =e; }
+	assert(error instanceof TypeError);
+});
+
+addTest('config update is atomic', function(){
+	ajax.config({baseUrl:'/api',timeout:1234,headers:{'X-Base':'A'}});
+	var error =null;
+	try{ ajax.config({baseUrl:'/broken',timeout:-1}); }catch(e){ error =e; }
+	assert(error instanceof TypeError);
+
+	var job =ajax.get('users', null, {dataType:'text'}),
+	xhr =MockXHR.latest();
+	assert(xhr.url === '/api/users', 'url=' + xhr.url);
+	assert(xhr.timeout === 1234, 'timeout=' + xhr.timeout);
+	xhr.respond(200, 'ok');
+	return job.then(function(ret){ assert(ret === 'ok'); });
+});
+
+addTest('GET query + hash position', function(){
+	var job =ajax.get('items#top', {a:1,b:'x y'}, {dataType:'text'}),
+	xhr =MockXHR.latest();
+	assert(xhr.url === '/api/items?a=1&b=x%20y#top', 'url=' + xhr.url);
+	xhr.respond(200, 'ok');
+	return job;
+});
+
+addTest('cache false appends cache buster', function(){
+	var job =ajax.get('items#top', null, {dataType:'text',cache:false}),
+	xhr =MockXHR.latest();
+	assert(/^\/api\/items\?_\=\d+#top$/.test(xhr.url), 'url=' + xhr.url);
+	xhr.respond(200, 'ok');
+	return job;
+});
+
+addTest('POST plain object uses form encoding', function(){
+	ajax.config({headers:{'Content-Type':null}});
+	var job =ajax.post('save', {a:1,b:'x y'}, {dataType:'text'}),
+	xhr =MockXHR.latest();
+	assert(xhr.body === 'a=1&b=x%20y', 'body=' + xhr.body);
+	assert(header(xhr, 'Content-Type') === 'application/x-www-form-urlencoded;charset=UTF-8');
+	xhr.respond(200, 'saved');
+	return job;
+});
+
+addTest('postJson uses JSON body', function(){
+	var job =ajax.postJson('save-json', {a:1}, {dataType:'json'}),
+	xhr =MockXHR.latest();
+	assert(xhr.body === '{"a":1}');
+	assert(header(xhr, 'content-type') === 'application/json;charset=UTF-8');
+	xhr.respond(200, '{"ok":true}');
+	return job.then(function(ret){ assert(ret.ok === true); });
+});
+
+addTest('request header merge is case-insensitive', function(){
+	ajax.config({headers:{'X-Test':'A'}});
+	var job =ajax.get('headers', null, {dataType:'text',headers:{'x-test':'B'}}),
+	xhr =MockXHR.latest(),keys=[];
+
+	for(var key in xhr.requestHeaders){
+		if(key.toLowerCase() === 'x-test') keys.push(key);
+	}
+
+	assert(header(xhr, 'x-test') === 'B');
+	assert(keys.length === 1);
+	xhr.respond(200, 'ok');
+	return job;
+});
+
+addTest('contentType false removes default Content-Type', function(){
+	ajax.config({headers:{'Content-Type':'text/plain'}});
+	var job =ajax.post('no-content-type', {a:1}, {dataType:'text',contentType:false}),
+	xhr =MockXHR.latest();
+	assert(header(xhr, 'content-type') === undefined);
+	xhr.respond(200, 'ok');
+	return job;
+});
+
+addTest('FormData removes manual Content-Type', function(){
+	if(typeof FormData === 'undefined') return;
+	var data =new FormData();
+	data.append('a', '1');
+	var job =ajax.post('form', data, {dataType:'text',headers:{'Content-Type':'multipart/form-data'}}),
+	xhr =MockXHR.latest();
+	assert(xhr.body === data);
+	assert(header(xhr, 'content-type') === undefined);
+	xhr.respond(200, 'ok');
+	return job;
+});
+
+addTest('raw body supports explicit contentType', function(){
+	if(typeof Blob === 'undefined') return;
+	ajax.config({headers:{'Content-Type':null}});
+	var blob =new Blob(['abc']),
+	job =ajax.request({url:'raw',method:'POST',data:blob,dataType:'text',contentType:'application/octet-stream'}),
+	xhr =MockXHR.latest();
+	assert(xhr.body === blob);
+	assert(header(xhr, 'content-type') === 'application/octet-stream');
+	xhr.respond(200, 'ok');
+	return job;
+});
+
+addTest('success + complete callbacks and cleanup', function(){
+	var successCount =0,completeCount =0,job;
+	job =ajax.get('callback', null, {
+		dataType:'json',
+		success:function(data, xhr){ successCount++; assert(data.ok === 1); assert(xhr === job.xhr); },
+		complete:function(xhr, data, error){ completeCount++; assert(data.ok === 1); assert(error === null); }
+	});
+	var xhr =job.xhr;
+	xhr.respond(200, '{"ok":1}');
+	return job.then(function(ret){
+		assert(ret.ok === 1);
+		assert(successCount === 1 && completeCount === 1);
+		assert(xhr.onload === null && xhr.onerror === null && xhr.ontimeout === null && xhr.onabort === null);
+	});
+});
+
+addTest('JSON parse error classification', function(){
+	var job =ajax.get('bad-json');
+	MockXHR.latest().respond(200, '{bad');
+	return expectReject(job, 'parse').then(function(error){
+		assert(error.status === 200);
+		assert(error.originalError instanceof Error);
+	});
+});
+
+addTest('HTTP error classification and response parsing', function(){
+	var job =ajax.get('http-error');
+	MockXHR.latest().respond(500, '{"message":"bad"}', 'Server Error');
+	return expectReject(job, 'http').then(function(error){
+		assert(error.status === 500);
+		assert(error.response.message === 'bad');
+	});
+});
+
+addTest('network error classification', function(){
+	var job =ajax.get('network', null, {dataType:'text'});
+	MockXHR.latest().networkError();
+	return expectReject(job, 'network');
+});
+
+addTest('timeout error classification', function(){
+	var job =ajax.get('timeout', null, {dataType:'text'});
+	MockXHR.latest().timeoutError();
+	return expectReject(job, 'timeout');
+});
+
+addTest('abort rejects once and later returns false', function(){
+	var job =ajax.get('abort', null, {dataType:'text'});
+	assert(job.abort() === true);
+	return expectReject(job, 'abort').then(function(){ assert(job.abort() === false); });
+});
+
+addTest('open failure is request error', function(){
+	MockXHR.throwOpen =true;
+	return expectReject(ajax.get('open-fail', null, {dataType:'text'}), 'request').then(function(error){
+		assert(error.originalError instanceof Error);
+	});
+});
+
+addTest('send failure is request error', function(){
+	MockXHR.throwSend =true;
+	return expectReject(ajax.get('send-fail', null, {dataType:'text'}), 'request').then(function(error){
+		assert(error.originalError instanceof Error);
+	});
+});
+
+addTest('invalid callback rejects before request', function(){
+	var before =MockXHR.instances.length;
+	return ajax.request({url:'x',success:'bad'}).then(function(){
+		throw new Error('expected rejection');
+	}, function(error){
+		assert(error instanceof TypeError);
+		assert(MockXHR.instances.length === before);
+	});
+});
+
+addTest('runAll success waits succFunc Promise', function(){
+	return ajax.runAll([Promise.resolve(1),Promise.resolve(2)], function(values){
+		return Promise.resolve(values[0] + values[1]);
+	}).then(function(result){ assert(result === 3); });
+});
+
+addTest('runAll error callback keeps original rejection', function(){
+	var source =new Error('boom'),called =0;
+	return ajax.runAll([Promise.reject(source)], null, function(error){
+		called++;
+		assert(error === source);
+	}).then(function(){
+		throw new Error('expected rejection');
+	}, function(error){
+		assert(called === 1);
+		assert(error === source);
+	});
+});
+
+var chain =Promise.resolve();
+for(var i=0; i<tests.length; i++){
+	(function(item){
+		chain =chain.then(function(){ return test(item[0], item[1]); });
+	}(tests[i]));
+}
+
+chain.then(function(){
+	document.body.setAttribute('data-test-done', '1');
+	document.body.setAttribute('data-test-pass', String(passed));
+	document.body.setAttribute('data-test-fail', String(failed));
+	render();
+});
+
+}());
+</script>
+</body>
+</html>
